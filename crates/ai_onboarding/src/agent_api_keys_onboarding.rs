@@ -29,7 +29,7 @@ impl ApiKeysWithProviders {
 
     fn compute_configured_providers(cx: &App) -> Vec<(IconOrSvg, SharedString)> {
         LanguageModelRegistry::read_global(cx)
-            .visible_providers()
+            .visible_providers(cx)
             .iter()
             .filter(|provider| {
                 provider.is_authenticated(cx) && provider.id() != ZED_CLOUD_PROVIDER_ID

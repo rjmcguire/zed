@@ -32,8 +32,8 @@ use futures::{
     select_biased,
 };
 use gpui::{
-    App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, Global, Task, WeakEntity,
-    actions,
+    App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, Global, Subscription, Task,
+    WeakEntity, actions,
 };
 use http_client::{AsyncBody, HttpClient, HttpClientWithUrl};
 use language::{
@@ -46,7 +46,7 @@ use release_channel::ReleaseChannel;
 use remote::RemoteClient;
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use settings::Settings;
+use settings::{EnterpriseSettings, Settings, SettingsStore};
 use std::ops::RangeInclusive;
 use std::str::FromStr;
 use std::{
@@ -125,6 +125,7 @@ pub struct ExtensionStore {
     pub tasks: Vec<Task<()>>,
     pub remote_clients: Vec<WeakEntity<RemoteClient>>,
     pub ssh_registered_tx: UnboundedSender<()>,
+    pub _subscriptions: Vec<Subscription>,
 }
 
 #[derive(Clone, Copy)]
@@ -250,6 +251,15 @@ impl ExtensionStore {
 
         let (reload_tx, mut reload_rx) = unbounded();
         let (connection_registered_tx, mut connection_registered_rx) = unbounded();
+
+        let mut subscriptions = Vec::new();
+        subscriptions.push(SettingsStore::observe::<EnterpriseSettings>(cx, {
+            let reload_tx = reload_tx.clone();
+            move |_| {
+                reload_tx.unbounded_send(None).ok();
+            }
+        }));
+
         let mut this = Self {
             proxy: extension_host_proxy.clone(),
             extension_index: Default::default(),
@@ -276,6 +286,7 @@ impl ExtensionStore {
 
             remote_clients: Default::default(),
             ssh_registered_tx: connection_registered_tx,
+            _subscriptions: subscriptions,
         };
 
         // The extensions store maintains an index file, which contains a complete
@@ -830,13 +841,47 @@ impl ExtensionStore {
         self.install_or_upgrade_extension(extension_id, version, ExtensionOperation::Upgrade, cx)
     }
 
-    fn install_or_upgrade_extension(
+    pub(crate) fn install_or_upgrade_extension(
         &mut self,
         extension_id: Arc<str>,
         version: Arc<str>,
         operation: ExtensionOperation,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        if let Some(enterprise) = EnterpriseSettings::try_get(cx) {
+            if enterprise.enabled {
+                if let Some(allowed) = &enterprise.allowed_extensions {
+                    if !allowed.iter().any(|s| s == extension_id.as_ref()) {
+                        log::warn!(
+                            "Extension installation blocked by enterprise policy: {}",
+                            extension_id
+                        );
+                        if let Some(audit_url) = enterprise.audit_url.clone() {
+                            let organization_id = enterprise.organization_id.clone();
+                            let client = self.http_client.clone();
+                            let extension_id = extension_id.clone();
+                            cx.background_spawn(async move {
+                                let body = serde_json::json!({
+                                    "event": "extension_install_blocked",
+                                    "extension_id": extension_id,
+                                    "organization_id": organization_id,
+                                });
+                                let request =
+                                    http_client::Request::post(&audit_url).body(body.to_string().into());
+                                if let Ok(request) = request {
+                                    client.send(request).await.log_err();
+                                }
+                            })
+                            .detach();
+                        }
+
+                        return Task::ready(Err(anyhow!(
+                            "Extension installation blocked by enterprise policy"
+                        )));
+                    }
+                }
+            }
+        }
         log::info!("installing extension {extension_id} {version}");
         let Some(url) = self
             .http_client
@@ -1085,6 +1130,17 @@ impl ExtensionStore {
         cx: &mut Context<Self>,
     ) -> Task<()> {
         let old_index = &self.extension_index;
+
+        if let Some(enterprise) = EnterpriseSettings::try_get(cx) {
+            if enterprise.enabled {
+                if let Some(allowed) = &enterprise.allowed_extensions {
+                    let allowed_set: HashSet<_> = allowed.iter().map(|s| s.as_str()).collect();
+                    new_index
+                        .extensions
+                        .retain(|id, _| allowed_set.contains(id.as_ref()));
+                }
+            }
+        }
 
         new_index
             .extensions

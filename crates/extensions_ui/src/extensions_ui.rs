@@ -20,7 +20,7 @@ use gpui::{
 use num_format::{Locale, ToFormattedString};
 use project::DirectoryLister;
 use release_channel::ReleaseChannel;
-use settings::{Settings, SettingsContent};
+use settings::{EnterpriseSettings, Settings, SettingsContent};
 use strum::IntoEnumIterator as _;
 use theme::ThemeSettings;
 use ui::{
@@ -997,6 +997,38 @@ impl ExtensionsPage {
             };
         }
 
+        let is_blocked = if let Some(enterprise) = EnterpriseSettings::try_get(cx) {
+            if enterprise.enabled {
+                if let Some(allowed) = &enterprise.allowed_extensions {
+                    !allowed.iter().any(|allowed_id| allowed_id == extension.id.as_ref())
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if is_blocked {
+             return ExtensionCardButtons {
+                install_or_uninstall: Button::new(
+                    SharedString::from(extension.id.clone()),
+                    "Blocked",
+                )
+                .style(ButtonStyle::Tinted(ui::TintColor::Accent))
+                .icon(IconName::Slash)
+                .icon_size(IconSize::Small)
+                .icon_color(Color::Muted)
+                .icon_position(IconPosition::Start)
+                .disabled(true)
+                .tooltip(Tooltip::text("Blocked by organization policy")),
+                configure: None,
+                upgrade: None,
+            };
+        }
+
         let is_configurable = extension
             .manifest
             .provides
@@ -1608,6 +1640,17 @@ impl Render for ExtensionsPage {
         v_flex()
             .size_full()
             .bg(cx.theme().colors().editor_background)
+            .when(
+                EnterpriseSettings::get_global(cx).enabled,
+                 |this| {
+                this.child(
+                    div().px_4().pt_4().child(
+                        Banner::new()
+                            .severity(Severity::Info)
+                            .child(Label::new("These settings are managed by your enterprise. Contact helpdesk for further info."))
+                    )
+                )
+            })
             .child(
                 v_flex()
                     .gap_4()

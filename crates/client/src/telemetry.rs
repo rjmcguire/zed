@@ -10,7 +10,7 @@ use http_client::{self, AsyncBody, HttpClient, HttpClientWithUrl, Method, Reques
 use parking_lot::Mutex;
 use regex::Regex;
 use release_channel::ReleaseChannel;
-use settings::{Settings, SettingsStore};
+use settings::{EnterpriseSettings, Settings, SettingsStore};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::File;
@@ -37,6 +37,7 @@ struct TelemetryState {
     installation_id: Option<Arc<str>>, // Per app installation (different for dev, nightly, preview, and stable)
     session_id: Option<String>,        // Per app launch
     metrics_id: Option<Arc<str>>,      // Per logged-in user
+    organization_id: Option<Arc<str>>, // Per enterprise organization
     release_channel: Option<&'static str>,
     architecture: &'static str,
     events_queue: Vec<EventWrapper>,
@@ -187,6 +188,10 @@ impl Telemetry {
             installation_id: None,
             session_id: None,
             metrics_id: None,
+            organization_id: EnterpriseSettings::get_global(cx)
+                .organization_id
+                .as_ref()
+                .map(|id| Arc::from(id.as_str())),
             events_queue: Vec::new(),
             flush_events_task: None,
             log_file: None,
@@ -220,6 +225,10 @@ impl Telemetry {
             move |cx| {
                 let mut state = state.lock();
                 state.settings = *TelemetrySettings::get_global(cx);
+                state.organization_id = EnterpriseSettings::get_global(cx)
+                    .organization_id
+                    .as_ref()
+                    .map(|id| Arc::from(id.as_str()));
             }
         })
         .detach();
@@ -556,6 +565,7 @@ impl Telemetry {
                         installation_id: state.installation_id.as_deref().map(Into::into),
                         session_id: state.session_id.clone(),
                         metrics_id: state.metrics_id.as_deref().map(Into::into),
+                        organization_id: state.organization_id.as_deref().map(Into::into),
                         is_staff: state.is_staff,
                         app_version: state.app_version.clone(),
                         os_name: state.os_name.clone(),
@@ -602,8 +612,10 @@ pub fn calculate_json_checksum(json: &impl AsRef<[u8]>) -> Option<String> {
 mod tests {
     use super::*;
     use clock::FakeSystemClock;
+    use futures::AsyncReadExt;
     use gpui::TestAppContext;
-    use http_client::FakeHttpClient;
+    use http_client::{FakeHttpClient, Response};
+    use serde_json::json;
     use std::collections::HashMap;
     use telemetry_events::FlexibleEvent;
     use util::rel_path::RelPath;
@@ -877,5 +889,62 @@ mod tests {
             expected_project_types.map(|types| types.iter().map(|&t| t.to_string()).collect());
 
         assert_eq!(detected_project_types, expected_project_types);
+    }
+
+    #[gpui::test]
+    async fn test_telemetry_organization_id(cx: &mut TestAppContext) {
+        use gpui::UpdateGlobal;
+        init_test(cx);
+        let clock = Arc::new(FakeSystemClock::new());
+        let telemetry_requests = Arc::new(Mutex::new(Vec::new()));
+        let http = FakeHttpClient::create({
+            let telemetry_requests = telemetry_requests.clone();
+            move |request| {
+                let telemetry_requests = telemetry_requests.clone();
+                async move {
+                    let mut body = Vec::new();
+                    request.into_body().read_to_end(&mut body).await.unwrap();
+                    telemetry_requests.lock().push(serde_json::from_slice::<serde_json::Value>(&body).unwrap());
+                    Ok(Response::new(Default::default()))
+                }
+            }
+        });
+
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store: &mut SettingsStore, cx| {
+                store.set_user_settings(
+                    &json!({
+                        "enterprise": {
+                            "enabled": true,
+                            "organization_id": "my-org-456"
+                        }
+                    })
+                    .to_string(),
+                    cx,
+                );
+            });
+        });
+
+        let system_id = Some("system_id".to_string());
+        let installation_id = Some("installation_id".to_string());
+        let session_id = "session_id".to_string();
+
+        let telemetry = cx.update(|cx| {
+            let telemetry = Telemetry::new(clock.clone(), http, cx);
+            telemetry.start(system_id, installation_id, session_id, cx);
+            telemetry
+        });
+
+        telemetry.report_event(Event::Flexible(FlexibleEvent {
+            event_type: "test".to_string(),
+            event_properties: Default::default(),
+        }));
+
+        // Trigger a flush
+        telemetry.flush_events().await;
+
+        let requests = telemetry_requests.lock();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["organization_id"], "my-org-456");
     }
 }

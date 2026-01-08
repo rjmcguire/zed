@@ -5,12 +5,14 @@ mod keymap_file;
 pub mod merge_from;
 mod serde_helper;
 mod settings_content;
-mod settings_file;
 mod settings_store;
 mod vscode_import;
+mod enterprise_settings;
+mod settings_file;
 
 pub use settings_content::*;
 pub use settings_macros::RegisterSetting;
+pub use enterprise_settings::*;
 
 #[doc(hidden)]
 pub mod private {

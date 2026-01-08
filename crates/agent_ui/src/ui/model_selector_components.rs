@@ -51,6 +51,7 @@ pub struct ModelSelectorListItem {
     is_selected: bool,
     is_focused: bool,
     is_favorite: bool,
+    is_blocked: bool,
     on_toggle_favorite: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
 }
 
@@ -63,6 +64,7 @@ impl ModelSelectorListItem {
             is_selected: false,
             is_focused: false,
             is_favorite: false,
+            is_blocked: false,
             on_toggle_favorite: None,
         }
     }
@@ -92,6 +94,11 @@ impl ModelSelectorListItem {
         self
     }
 
+    pub fn is_blocked(mut self, is_blocked: bool) -> Self {
+        self.is_blocked = is_blocked;
+        self
+    }
+
     pub fn on_toggle_favorite(
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -105,13 +112,21 @@ impl RenderOnce for ModelSelectorListItem {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let model_icon_color = if self.is_selected {
             Color::Accent
+        } else if self.is_blocked {
+            Color::Disabled
         } else {
             Color::Muted
         };
 
+        let label_color = if self.is_blocked {
+            Color::Disabled
+        } else {
+            Color::Default
+        };
+
         let is_favorite = self.is_favorite;
 
-        ListItem::new(self.index)
+        let mut item = ListItem::new(self.index)
             .inset(true)
             .spacing(ListItemSpacing::Sparse)
             .toggle_state(self.is_focused)
@@ -129,12 +144,18 @@ impl RenderOnce for ModelSelectorListItem {
                             .size(IconSize::Small),
                         )
                     })
-                    .child(Label::new(self.title).truncate()),
+                    .child(Label::new(self.title).color(label_color).truncate())
+                    .when(self.is_blocked, |this| {
+                         this.child(Label::new("(Blocked)").size(LabelSize::XSmall).color(Color::Error))
+                    }),
             )
             .end_slot(div().pr_2().when(self.is_selected, |this| {
                 this.child(Icon::new(IconName::Check).color(Color::Accent))
-            }))
-            .end_hover_slot(div().pr_1p5().when_some(self.on_toggle_favorite, {
+            }));
+
+        if !self.is_blocked {
+            item = item.end_hover_slot(div().pr_1p5().when_some(
+                self.on_toggle_favorite,
                 |this, handle_click| {
                     let (icon, color, tooltip) = if is_favorite {
                         (IconName::StarFilled, Color::Accent, "Unfavorite Model")
@@ -149,8 +170,10 @@ impl RenderOnce for ModelSelectorListItem {
                             .tooltip(Tooltip::text(tooltip))
                             .on_click(move |event, window, cx| (handle_click)(event, window, cx)),
                     )
-                }
-            }))
+                },
+            ));
+        }
+        item
     }
 }
 

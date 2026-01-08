@@ -217,6 +217,20 @@ pub fn settings_file() -> &'static PathBuf {
     SETTINGS_FILE.get_or_init(|| config_dir().join("settings.json"))
 }
 
+/// Returns the path to the system-wide settings.json file.
+pub fn system_settings_file() -> &'static PathBuf {
+    static SYSTEM_SETTINGS_FILE: OnceLock<PathBuf> = OnceLock::new();
+    SYSTEM_SETTINGS_FILE.get_or_init(|| {
+        if cfg!(target_os = "windows") {
+            PathBuf::from(env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".into()))
+                .join("Zed")
+                .join("settings.json")
+        } else {
+            PathBuf::from("/etc/zed/settings.json")
+        }
+    })
+}
+
 /// Returns the path to the global settings file.
 pub fn global_settings_file() -> &'static PathBuf {
     static GLOBAL_SETTINGS_FILE: OnceLock<PathBuf> = OnceLock::new();

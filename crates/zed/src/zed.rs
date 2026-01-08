@@ -1524,11 +1524,12 @@ fn notify_settings_errors(result: settings::SettingsParseResult, is_user: bool, 
 pub fn handle_settings_file_changes(
     mut user_settings_file_rx: mpsc::UnboundedReceiver<String>,
     mut global_settings_file_rx: mpsc::UnboundedReceiver<String>,
+    mut system_settings_file_rx: mpsc::UnboundedReceiver<String>,
     cx: &mut App,
 ) {
     MigrationNotification::set_global(cx.new(|_| MigrationNotification), cx);
 
-    // Initial load of both settings files
+    // Initial load of settings files
     let global_content = cx
         .background_executor()
         .block(global_settings_file_rx.next())
@@ -1537,41 +1538,53 @@ pub fn handle_settings_file_changes(
         .background_executor()
         .block(user_settings_file_rx.next())
         .unwrap();
+    let system_content = cx
+        .background_executor()
+        .block(system_settings_file_rx.next())
+        .unwrap();
 
     SettingsStore::update_global(cx, |store, cx| {
         notify_settings_errors(store.set_user_settings(&user_content, cx), true, cx);
         notify_settings_errors(store.set_global_settings(&global_content, cx), false, cx);
+        store
+            .set_system_settings(&system_content, cx)
+            .log_err();
     });
 
-    // Watch for changes in both files
+    // Watch for changes in all files
     cx.spawn(async move |cx| {
         let mut settings_streams = futures::stream::select(
-            global_settings_file_rx.map(Either::Left),
-            user_settings_file_rx.map(Either::Right),
+            global_settings_file_rx.map(|s| (settings::SettingsFile::Global, s)),
+            futures::stream::select(
+                user_settings_file_rx.map(|s| (settings::SettingsFile::User, s)),
+                system_settings_file_rx.map(|s| (settings::SettingsFile::System, s)),
+            ),
         );
 
-        while let Some(content) = settings_streams.next().await {
-            let (content, is_user) = match content {
-                Either::Left(content) => (content, false),
-                Either::Right(content) => (content, true),
-            };
-
+        while let Some((file_type, content)) = settings_streams.next().await {
             cx.update_global(|store: &mut SettingsStore, cx| {
-                let result = if is_user {
-                    store.set_user_settings(&content, cx)
-                } else {
-                    store.set_global_settings(&content, cx)
-                };
-                let migrating_in_memory =
-                    matches!(&result.migration_status, MigrationStatus::Succeeded);
-                notify_settings_errors(result, is_user, cx);
-                if let Some(notifier) = MigrationNotification::try_global(cx) {
-                    notifier.update(cx, |_, cx| {
-                        cx.emit(MigrationEvent::ContentChanged {
-                            migration_type: MigrationType::Settings,
-                            migrating_in_memory,
-                        });
-                    });
+                match file_type {
+                    settings::SettingsFile::User => {
+                        let result = store.set_user_settings(&content, cx);
+                        let migrating_in_memory =
+                            matches!(&result.migration_status, MigrationStatus::Succeeded);
+                        notify_settings_errors(result, true, cx);
+                        if let Some(notifier) = MigrationNotification::try_global(cx) {
+                            notifier.update(cx, |_, cx| {
+                                cx.emit(MigrationEvent::ContentChanged {
+                                    migration_type: MigrationType::Settings,
+                                    migrating_in_memory,
+                                });
+                            });
+                        }
+                    }
+                    settings::SettingsFile::Global => {
+                        notify_settings_errors(store.set_global_settings(&content, cx), false, cx);
+                    }
+                    settings::SettingsFile::System => {
+                        store.set_system_settings(&content, cx).log_err();
+                    }
+                    _ => {}
                 }
                 cx.refresh_windows();
             });
@@ -4556,7 +4569,9 @@ mod tests {
                 app_state.fs.clone(),
                 PathBuf::from("/global_settings.json"),
             );
-            handle_settings_file_changes(settings_rx, global_settings_rx, cx);
+            // System settings aren't used in this keymap test, so we use a dummy receiver for the signature.
+            let (_, system_settings_rx) = mpsc::unbounded();
+            handle_settings_file_changes(settings_rx, global_settings_rx, system_settings_rx, cx);
             handle_keymap_file_changes(keymap_rx, cx);
         });
         workspace
@@ -4674,7 +4689,9 @@ mod tests {
                 app_state.fs.clone(),
                 PathBuf::from("/global_settings.json"),
             );
-            handle_settings_file_changes(settings_rx, global_settings_rx, cx);
+            // System settings aren't used in this keymap test, so we use a dummy receiver for the signature.
+            let (_, system_settings_rx) = mpsc::unbounded();
+            handle_settings_file_changes(settings_rx, global_settings_rx, system_settings_rx, cx);
             handle_keymap_file_changes(keymap_rx, cx);
         });
 

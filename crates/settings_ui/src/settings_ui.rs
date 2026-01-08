@@ -1206,6 +1206,7 @@ impl std::fmt::Debug for FileMask {
 const USER: FileMask = FileMask(1 << 0);
 const PROJECT: FileMask = FileMask(1 << 2);
 const SERVER: FileMask = FileMask(1 << 3);
+const SYSTEM: FileMask = FileMask(1 << 4);
 
 impl std::ops::BitAnd for FileMask {
     type Output = Self;
@@ -1299,6 +1300,7 @@ enum SettingsUiFile {
     User,                                // Uses all settings.
     Project((WorktreeId, Arc<RelPath>)), // Has a special name, and special set of settings
     Server(&'static str),                // Uses a special name, and the user settings
+    System,
 }
 
 impl SettingsUiFile {
@@ -1307,6 +1309,7 @@ impl SettingsUiFile {
             SettingsUiFile::User => "User",
             SettingsUiFile::Project(_) => "Project",
             SettingsUiFile::Server(_) => "Server",
+            SettingsUiFile::System => "System",
         }
     }
 
@@ -1319,6 +1322,7 @@ impl SettingsUiFile {
             SettingsUiFile::User => None,
             SettingsUiFile::Project((worktree_id, _)) => Some(*worktree_id),
             SettingsUiFile::Server(_) => None,
+            SettingsUiFile::System => None,
         }
     }
 
@@ -1327,6 +1331,7 @@ impl SettingsUiFile {
             settings::SettingsFile::User => SettingsUiFile::User,
             settings::SettingsFile::Project(location) => SettingsUiFile::Project(location),
             settings::SettingsFile::Server => SettingsUiFile::Server("todo: server name"),
+            settings::SettingsFile::System => SettingsUiFile::System,
             settings::SettingsFile::Default => return None,
             settings::SettingsFile::Global => return None,
         })
@@ -1337,6 +1342,7 @@ impl SettingsUiFile {
             SettingsUiFile::User => settings::SettingsFile::User,
             SettingsUiFile::Project(location) => settings::SettingsFile::Project(location.clone()),
             SettingsUiFile::Server(_) => settings::SettingsFile::Server,
+            SettingsUiFile::System => settings::SettingsFile::System,
         }
     }
 
@@ -1345,6 +1351,7 @@ impl SettingsUiFile {
             SettingsUiFile::User => USER,
             SettingsUiFile::Project(_) => PROJECT,
             SettingsUiFile::Server(_) => SERVER,
+            SettingsUiFile::System => SYSTEM,
         }
     }
 }
@@ -2307,6 +2314,7 @@ impl SettingsWindow {
                     }
                 }),
             SettingsUiFile::Server(file) => Some(file.to_string()),
+            SettingsUiFile::System => Some("System".to_string()),
         }
     }
 
@@ -3079,7 +3087,7 @@ impl SettingsWindow {
                         "Your settings are out of date, and need to be updated.",
                         match &self.current_file {
                             SettingsUiFile::User => "They can be automatically migrated to the latest version.",
-                            SettingsUiFile::Server(_) | SettingsUiFile::Project(_)  => "They must be manually migrated to the latest version."
+                            SettingsUiFile::Server(_) | SettingsUiFile::Project(_) | SettingsUiFile::System => "They must be manually migrated to the latest version."
                         }.to_string(),
                         &mut self.shown_errors,
                         cx,
@@ -3324,8 +3332,8 @@ impl SettingsWindow {
 
                 window.remove_window();
             }
-            SettingsUiFile::Server(_) => {
-                // Server files are not editable
+            SettingsUiFile::Server(_) | SettingsUiFile::System => {
+                // Server and System files are not editable
                 return;
             }
         };
@@ -3587,11 +3595,12 @@ fn update_settings_file(
             return Ok(());
         }
         SettingsUiFile::User => {
-            // todo(settings_ui) error?
             SettingsStore::global(cx).update_settings_file(<dyn fs::Fs>::global(cx), update);
             Ok(())
         }
-        SettingsUiFile::Server(_) => unimplemented!(),
+        SettingsUiFile::System | SettingsUiFile::Server(_) => {
+            anyhow::bail!("Cannot update read-only settings file: {:?}", file)
+        }
     }
 }
 

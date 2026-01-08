@@ -1,6 +1,6 @@
 use crate::{
     Event, ExtensionIndex, ExtensionIndexEntry, ExtensionIndexLanguageEntry,
-    ExtensionIndexThemeEntry, ExtensionManifest, ExtensionStore, GrammarManifestEntry,
+    ExtensionIndexThemeEntry, ExtensionManifest, ExtensionOperation, ExtensionStore, GrammarManifestEntry,
     RELOAD_DEBOUNCE_DURATION, SchemaVersion,
 };
 use async_compression::futures::bufread::GzipEncoder;
@@ -874,4 +874,92 @@ fn init_test(cx: &mut TestAppContext) {
         theme::init(theme::LoadThemes::JustBase, cx);
         gpui_tokio::init(cx);
     });
+}
+
+#[gpui::test]
+async fn test_blocked_extension_audit_log(cx: &mut TestAppContext) {
+    use gpui::UpdateGlobal;
+    use settings::SettingsContent;
+
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    let audit_requests = Arc::new(Mutex::new(Vec::new()));
+    let http_client = FakeHttpClient::create({
+        let audit_requests = audit_requests.clone();
+        move |request| {
+            let audit_requests = audit_requests.clone();
+            async move {
+                let mut body = Vec::new();
+                request.into_body().read_to_end(&mut body).await.unwrap();
+                audit_requests.lock().push(serde_json::from_slice::<serde_json::Value>(&body).unwrap());
+                Ok(Response::new(Default::default()))
+            }
+        }
+    });
+
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |store: &mut SettingsStore, cx| {
+            store.set_user_settings(
+                &json!({
+                    "enterprise": {
+                        "enabled": true,
+                        "allowed_extensions": ["allowed-extension"],
+                        "organization_id": "my-org-123",
+                        "audit_url": "http://audit.example/report"
+                    }
+                })
+                .to_string(),
+                cx,
+            );
+        });
+    });
+
+    let proxy = Arc::new(ExtensionHostProxy::new());
+    let node_runtime = NodeRuntime::unavailable();
+
+    let store = cx.new(|cx| {
+        ExtensionStore::new(
+            PathBuf::from("/the-extension-dir"),
+            None,
+            proxy.clone(),
+            fs.clone(),
+            http_client.clone(),
+            http_client.clone(),
+            None,
+            node_runtime.clone(),
+            cx,
+        )
+    });
+
+    let result = store
+        .update(cx, |store, cx| {
+            store.install_or_upgrade_extension(
+                "blocked-extension".into(),
+                "1.0.0".into(),
+                ExtensionOperation::Install,
+                cx,
+            )
+        })
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "Extension installation blocked by enterprise policy"
+    );
+
+    // Give it a moment to send the background request
+    cx.executor().run_until_parked();
+
+    let requests = audit_requests.lock();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0],
+        json!({
+            "event": "extension_install_blocked",
+            "extension_id": "blocked-extension",
+            "organization_id": "my-org-123"
+        })
+    );
 }

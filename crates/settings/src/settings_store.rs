@@ -7,7 +7,7 @@ use futures::{
     channel::{mpsc, oneshot},
     future::LocalBoxFuture,
 };
-use gpui::{App, AsyncApp, BorrowAppContext, Global, SharedString, Task, UpdateGlobal};
+use gpui::{App, AsyncApp, BorrowAppContext, Global, SharedString, Subscription, Task, UpdateGlobal};
 
 use paths::{EDITORCONFIG_NAME, local_settings_file_relative_path, task_file_name};
 use schemars::{JsonSchema, json_schema};
@@ -149,6 +149,7 @@ pub struct SettingsStore {
 
     extension_settings: Option<Box<SettingsContent>>,
     server_settings: Option<Box<SettingsContent>>,
+    system_settings: Option<Box<SettingsContent>>,
 
     merged_settings: Rc<SettingsContent>,
 
@@ -167,6 +168,7 @@ pub enum SettingsFile {
     Global,
     User,
     Server,
+    System,
     /// Represents project settings in ssh projects as well as local projects
     Project((WorktreeId, Arc<RelPath>)),
 }
@@ -186,11 +188,14 @@ impl Ord for SettingsFile {
             (User, User) => Ordering::Equal,
             (Server, Server) => Ordering::Equal,
             (Default, Default) => Ordering::Equal,
+            (System, System) => Ordering::Equal,
             (Project((id1, rel_path1)), Project((id2, rel_path2))) => id1
                 .cmp(id2)
                 .then_with(|| rel_path1.cmp(rel_path2).reverse()),
             (Project(_), _) => Ordering::Less,
             (_, Project(_)) => Ordering::Greater,
+            (System, _) => Ordering::Less,
+            (_, System) => Ordering::Greater,
             (Server, _) => Ordering::Less,
             (_, Server) => Ordering::Greater,
             (User, _) => Ordering::Less,
@@ -274,6 +279,7 @@ impl SettingsStore {
             server_settings: None,
             user_settings: None,
             extension_settings: None,
+            system_settings: None,
 
             merged_settings: default_settings,
             local_settings: BTreeMap::default(),
@@ -297,6 +303,15 @@ impl SettingsStore {
             Self::update_global(cx, |store, cx| {
                 store.recompute_values(None, cx);
             });
+        })
+    }
+
+    pub fn observe<T: Settings>(
+        cx: &mut App,
+        mut f: impl FnMut(&mut App) + Send + 'static,
+    ) -> Subscription {
+        cx.observe_global::<Self>(move |cx| {
+            f(cx);
         })
     }
 
@@ -539,6 +554,10 @@ impl SettingsStore {
         if self.server_settings.is_some() {
             files.push(SettingsFile::Server);
         }
+
+        if self.system_settings.is_some() {
+            files.push(SettingsFile::System);
+        }
         // ignoring profiles
         // ignoring os profiles
         // ignoring release channel profiles
@@ -560,6 +579,7 @@ impl SettingsStore {
                 .map(|settings| settings.content.as_ref()),
             SettingsFile::Default => Some(self.default_settings.as_ref()),
             SettingsFile::Server => self.server_settings.as_deref(),
+            SettingsFile::System => self.system_settings.as_deref(),
             SettingsFile::Project(ref key) => self.local_settings.get(key),
             SettingsFile::Global => self.global_settings.as_deref(),
         }
@@ -822,6 +842,23 @@ impl SettingsStore {
 
         // Rewrite the server settings into a content type
         self.server_settings = settings.map(|settings| Box::new(settings));
+
+        self.recompute_values(None, cx);
+        Ok(())
+    }
+
+    pub fn set_system_settings(
+        &mut self,
+        system_settings_content: &str,
+        cx: &mut App,
+    ) -> Result<()> {
+        let settings: Option<SettingsContent> = if system_settings_content.is_empty() {
+            None
+        } else {
+            parse_json_with_comments(system_settings_content)?
+        };
+
+        self.system_settings = settings.map(|settings| Box::new(settings));
 
         self.recompute_values(None, cx);
         Ok(())
@@ -1132,6 +1169,7 @@ impl SettingsStore {
                 merged.merge_from_option(user_settings.for_profile(cx));
             }
             merged.merge_from_option(self.server_settings.as_deref());
+            merged.merge_from_option(self.system_settings.as_deref());
             self.merged_settings = Rc::new(merged);
 
             for setting_value in self.setting_values.values_mut() {
@@ -1160,6 +1198,9 @@ impl SettingsStore {
                 self.merged_settings.as_ref().clone()
             };
             merged_local_settings.merge_from(local_settings);
+            // System settings are enforced on top of project settings
+            // System settings are enforced on top of project settings
+            merged_local_settings.merge_from_option(self.system_settings.as_deref());
 
             project_settings_stack.push(merged_local_settings);
 
@@ -1303,6 +1344,7 @@ pub enum InvalidSettingsError {
     LocalSettings { path: Arc<RelPath>, message: String },
     UserSettings { message: String },
     ServerSettings { message: String },
+    SystemSettings { message: String },
     DefaultSettings { message: String },
     Editorconfig { path: Arc<RelPath>, message: String },
     Tasks { path: PathBuf, message: String },
@@ -1315,6 +1357,7 @@ impl std::fmt::Display for InvalidSettingsError {
             InvalidSettingsError::LocalSettings { message, .. }
             | InvalidSettingsError::UserSettings { message }
             | InvalidSettingsError::ServerSettings { message }
+            | InvalidSettingsError::SystemSettings { message }
             | InvalidSettingsError::DefaultSettings { message }
             | InvalidSettingsError::Tasks { message, .. }
             | InvalidSettingsError::Editorconfig { message, .. }

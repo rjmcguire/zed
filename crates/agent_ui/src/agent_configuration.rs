@@ -84,9 +84,11 @@ impl AgentConfiguration {
             window,
             |this, _, event: &language_model::Event, window, cx| match event {
                 language_model::Event::AddedProvider(provider_id) => {
-                    let provider = LanguageModelRegistry::read_global(cx).provider(provider_id);
-                    if let Some(provider) = provider {
-                        this.add_provider_configuration_view(&provider, window, cx);
+                    let registry = LanguageModelRegistry::read_global(cx);
+                    if registry.is_provider_visible(provider_id, cx) {
+                        if let Some(provider) = registry.provider(provider_id) {
+                            this.add_provider_configuration_view(&provider, window, cx);
+                        }
                     }
                 }
                 language_model::Event::RemovedProvider(provider_id) => {
@@ -118,7 +120,7 @@ impl AgentConfiguration {
     }
 
     fn build_provider_configuration_views(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let providers = LanguageModelRegistry::read_global(cx).visible_providers();
+        let providers = LanguageModelRegistry::read_global(cx).visible_providers(cx);
         for provider in providers {
             self.add_provider_configuration_view(&provider, window, cx);
         }
@@ -420,7 +422,7 @@ impl AgentConfiguration {
         &mut self,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let providers = LanguageModelRegistry::read_global(cx).visible_providers();
+        let providers = LanguageModelRegistry::read_global(cx).visible_providers(cx);
 
         let popover_menu = PopoverMenu::new("add-provider-popover")
             .trigger(

@@ -3,7 +3,8 @@ use crate::{
     LanguageModelProviderState,
 };
 use collections::{BTreeMap, HashSet};
-use gpui::{App, Context, Entity, EventEmitter, Global, prelude::*};
+use gpui::{App, Context, Entity, EventEmitter, Global, Subscription, prelude::*};
+use settings::{EnterpriseSettings, Settings, SettingsStore};
 use std::{str::FromStr, sync::Arc};
 use thiserror::Error;
 use util::maybe;
@@ -13,7 +14,22 @@ use util::maybe;
 pub type BuiltinProviderHidingFn = Box<dyn Fn(&str) -> Option<&'static str> + Send + Sync>;
 
 pub fn init(cx: &mut App) {
-    let registry = cx.new(|_cx| LanguageModelRegistry::default());
+    let registry = cx.new(|cx| {
+        let mut registry = LanguageModelRegistry::default();
+        registry._subscription = Some(SettingsStore::observe::<EnterpriseSettings>(cx, |cx| {
+            LanguageModelRegistry::global(cx).update(cx, |registry, cx| {
+                let providers = registry.providers.keys().cloned().collect::<Vec<_>>();
+                for provider_id in providers {
+                    if registry.is_provider_visible(&provider_id, cx) {
+                        cx.emit(Event::AddedProvider(provider_id));
+                    } else {
+                        cx.emit(Event::RemovedProvider(provider_id));
+                    }
+                }
+            });
+        }));
+        registry
+    });
     cx.set_global(GlobalLanguageModelRegistry(registry));
 }
 
@@ -57,6 +73,7 @@ pub struct LanguageModelRegistry {
     installed_llm_extension_ids: HashSet<Arc<str>>,
     /// Function to check if a built-in provider should be hidden by an extension.
     builtin_provider_hiding_fn: Option<BuiltinProviderHidingFn>,
+    _subscription: Option<Subscription>,
 }
 
 #[derive(Debug)]
@@ -194,11 +211,35 @@ impl LanguageModelRegistry {
         providers
     }
 
+    pub fn is_provider_visible(&self, provider_id: &LanguageModelProviderId, _cx: &App) -> bool {
+        !self.should_hide_provider(provider_id)
+    }
+
+    pub fn is_provider_blocked_by_policy(
+        &self,
+        provider_id: &LanguageModelProviderId,
+        cx: &App,
+    ) -> bool {
+        if let Some(enterprise) = EnterpriseSettings::try_get(cx) {
+            if enterprise.enabled {
+                if let Some(allowed) = &enterprise.allowed_ai_providers {
+                    if !allowed
+                        .iter()
+                        .any(|allowed_id| allowed_id == provider_id.0.as_ref())
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Returns providers, filtering out hidden built-in providers.
-    pub fn visible_providers(&self) -> Vec<Arc<dyn LanguageModelProvider>> {
+    pub fn visible_providers(&self, cx: &App) -> Vec<Arc<dyn LanguageModelProvider>> {
         self.providers()
             .into_iter()
-            .filter(|p| !self.should_hide_provider(&p.id()))
+            .filter(|p| self.is_provider_visible(&p.id(), cx))
             .collect()
     }
 
@@ -279,6 +320,7 @@ impl LanguageModelRegistry {
         self.providers
             .values()
             .filter(|provider| provider.is_authenticated(cx))
+            .filter(|provider| !self.is_provider_blocked_by_policy(&provider.id(), cx))
             .flat_map(|provider| provider.provided_models(cx))
     }
 
@@ -501,7 +543,7 @@ mod tests {
             }));
         });
 
-        let visible = registry.read(cx).visible_providers();
+        let visible = registry.read(cx).visible_providers(cx);
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].id(), provider_id);
 
@@ -509,7 +551,7 @@ mod tests {
             registry.extension_installed("fake-extension".into(), cx);
         });
 
-        let visible = registry.read(cx).visible_providers();
+        let visible = registry.read(cx).visible_providers(cx);
         assert!(visible.is_empty());
 
         let all = registry.read(cx).providers();
@@ -537,14 +579,14 @@ mod tests {
             registry.extension_installed("fake-extension".into(), cx);
         });
 
-        let visible = registry.read(cx).visible_providers();
+        let visible = registry.read(cx).visible_providers(cx);
         assert!(visible.is_empty());
 
         registry.update(cx, |registry, cx| {
             registry.extension_uninstalled("fake-extension", cx);
         });
 
-        let visible = registry.read(cx).visible_providers();
+        let visible = registry.read(cx).visible_providers(cx);
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].id(), provider_id);
     }
@@ -601,12 +643,12 @@ mod tests {
             registry.sync_installed_llm_extensions(extension_ids, cx);
         });
 
-        assert!(registry.read(cx).visible_providers().is_empty());
+        assert!(registry.read(cx).visible_providers(cx).is_empty());
 
         registry.update(cx, |registry, cx| {
             registry.sync_installed_llm_extensions(HashSet::default(), cx);
         });
 
-        assert_eq!(registry.read(cx).visible_providers().len(), 1);
+        assert_eq!(registry.read(cx).visible_providers(cx).len(), 1);
     }
 }

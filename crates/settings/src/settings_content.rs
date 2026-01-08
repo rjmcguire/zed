@@ -163,6 +163,9 @@ pub struct SettingsContent {
 
     /// Settings related to Vim mode in Zed.
     pub vim: Option<VimSettingsContent>,
+
+    /// Enterprise mode settings.
+    pub enterprise: Option<EnterpriseSettingsContent>,
 }
 
 impl SettingsContent {
@@ -1083,3 +1086,21 @@ impl std::fmt::Display for DelayMs {
         write!(f, "{}ms", self.0)
     }
 }
+
+#[with_fallible_options]
+#[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq)]
+pub struct EnterpriseSettingsContent {
+    /// Whether enterprise mode is enabled.
+    ///
+    /// Default: false
+    pub enabled: Option<bool>,
+    /// List of allowed extension IDs.
+    pub allowed_extensions: Option<Vec<String>>,
+    /// List of allowed AI provider IDs.
+    pub allowed_ai_providers: Option<Vec<String>>,
+    /// Organization ID for reporting.
+    pub organization_id: Option<String>,
+    /// URL to report violations or changes.
+    pub audit_url: Option<String>,
+}
+

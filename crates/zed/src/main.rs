@@ -376,6 +376,11 @@ fn main() {
         fs.clone(),
         paths::keymap_file().clone(),
     );
+    let system_settings_file_rx = watch_config_file(
+        &app.background_executor(),
+        fs.clone(),
+        paths::system_settings_file().clone(),
+    );
 
     let (shell_env_loaded_tx, shell_env_loaded_rx) = oneshot::channel();
     if !stdout_is_a_pty() {
@@ -434,7 +439,12 @@ fn main() {
         }
         settings::init(cx);
         zlog_settings::init(cx);
-        handle_settings_file_changes(user_settings_file_rx, global_settings_file_rx, cx);
+        handle_settings_file_changes(
+            user_settings_file_rx,
+            global_settings_file_rx,
+            system_settings_file_rx,
+            cx,
+        );
         handle_keymap_file_changes(user_keymap_file_rx, cx);
 
         let user_agent = format!(

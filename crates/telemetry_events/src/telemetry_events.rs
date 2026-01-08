@@ -14,6 +14,7 @@ pub struct EventRequestBody {
     /// Identifier unique to each Zed session (differs for each time you open Zed)
     pub session_id: Option<String>,
     pub metrics_id: Option<String>,
+    pub organization_id: Option<String>,
     /// True for Zed staff, otherwise false
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_staff: Option<bool>,
