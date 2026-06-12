@@ -33,7 +33,7 @@ use project::{
 };
 use settings::{Settings, SettingsStore, update_settings_file};
 use ui::{
-    AiSettingItem, AiSettingItemSource, AiSettingItemStatus, ButtonStyle, Chip, ContextMenu,
+    AiSettingItem, AiSettingItemSource, AiSettingItemStatus, Banner, ButtonStyle, Chip, ContextMenu,
     ContextMenuEntry, Disclosure, Divider, DividerColor, ElevationIndex, LabelSize, PopoverMenu,
     Switch, Tooltip, WithScrollbar, prelude::*,
 };
@@ -431,6 +431,7 @@ impl AgentConfiguration {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let providers = LanguageModelRegistry::read_global(cx).visible_providers(cx);
+        let restricted_by_policy = LanguageModelRegistry::ai_providers_restricted_by_policy(cx);
 
         let popover_menu = PopoverMenu::new("add-provider-popover")
             .trigger(
@@ -476,9 +477,33 @@ impl AgentConfiguration {
             .w_full()
             .child(self.render_section_title(
                 "LLM Providers",
-                "Add at least one provider to use AI-powered features with Zed's native agent.",
-                popover_menu.into_any_element(),
+                if restricted_by_policy {
+                    "Your organization manages which AI providers are available in Zed."
+                } else {
+                    "Add at least one provider to use AI-powered features with Zed's native agent."
+                },
+                if restricted_by_policy {
+                    div().into_any_element()
+                } else {
+                    popover_menu.into_any_element()
+                },
             ))
+            .when(restricted_by_policy, |this| {
+                this.child(
+                    div()
+                        .px(DynamicSpacing::Base08.rems(cx))
+                        .pb_2()
+                        .child(
+                            Banner::new().severity(Severity::Info).child(
+                                Label::new(
+                                    "AI providers are managed by your organization. \
+                                    Contact your administrator for more information.",
+                                )
+                                .size(LabelSize::Small),
+                            ),
+                        ),
+                )
+            })
             .child(
                 div()
                     .w_full()

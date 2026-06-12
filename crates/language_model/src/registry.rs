@@ -236,11 +236,23 @@ impl LanguageModelRegistry {
         false
     }
 
-    /// Returns providers, filtering out hidden built-in providers.
+    /// Whether enterprise policy restricts which AI providers may be used.
+    ///
+    /// When true, provider setup/onboarding UI should be replaced with a notice
+    /// and only the allowed providers should be offered or selectable.
+    pub fn ai_providers_restricted_by_policy(cx: &App) -> bool {
+        EnterpriseSettings::try_get(cx).is_some_and(|enterprise| {
+            enterprise.enabled && enterprise.allowed_ai_providers.is_some()
+        })
+    }
+
+    /// Returns providers, filtering out hidden built-in providers and any
+    /// providers blocked by enterprise policy.
     pub fn visible_providers(&self, cx: &App) -> Vec<Arc<dyn LanguageModelProvider>> {
         self.providers()
             .into_iter()
             .filter(|p| self.is_provider_visible(&p.id(), cx))
+            .filter(|p| !self.is_provider_blocked_by_policy(&p.id(), cx))
             .collect()
     }
 

@@ -4,7 +4,7 @@ use client::{Client, UserStore};
 use cloud_api_types::Plan;
 use gpui::{Entity, IntoElement, ParentElement};
 use language_model::{LanguageModelRegistry, ZED_CLOUD_PROVIDER_ID};
-use ui::prelude::*;
+use ui::{Banner, prelude::*};
 
 use crate::{AgentPanelOnboardingCard, ApiKeysWithoutProviders, ZedAiOnboarding};
 
@@ -77,10 +77,24 @@ impl Render for AgentPanelOnboarding {
             move |window, cx| callback(window, cx)
         });
 
+        let restricted_by_policy = LanguageModelRegistry::ai_providers_restricted_by_policy(cx);
+
         AgentPanelOnboardingCard::new()
             .child(onboarding)
             .map(|this| {
-                if enrolled_in_trial || is_pro_user || self.has_configured_providers {
+                if restricted_by_policy {
+                    this.child(
+                        div().mt_2().child(
+                            Banner::new().severity(Severity::Info).child(
+                                Label::new(
+                                    "AI providers are managed by your organization. \
+                                    Contact your administrator for more information.",
+                                )
+                                .size(LabelSize::Small),
+                            ),
+                        ),
+                    )
+                } else if enrolled_in_trial || is_pro_user || self.has_configured_providers {
                     this
                 } else {
                     this.child(ApiKeysWithoutProviders::new())
