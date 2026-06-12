@@ -263,6 +263,9 @@ pub struct SettingsContent {
     /// Settings for developer-oriented instrumentation tools (profilers,
     /// tracers, etc.) that can be toggled at runtime.
     pub instrumentation: Option<InstrumentationSettingsContent>,
+
+    /// Enterprise mode settings.
+    pub enterprise: Option<EnterpriseSettingsContent>,
 }
 
 /// Configuration for developer-oriented instrumentation tools that collect
@@ -1323,4 +1326,21 @@ impl std::fmt::Display for DelayMs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}ms", self.0)
     }
+}
+
+#[with_fallible_options]
+#[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq)]
+pub struct EnterpriseSettingsContent {
+    /// Whether enterprise mode is enabled.
+    ///
+    /// Default: false
+    pub enabled: Option<bool>,
+    /// List of allowed extension IDs.
+    pub allowed_extensions: Option<Vec<String>>,
+    /// List of allowed AI provider IDs.
+    pub allowed_ai_providers: Option<Vec<String>>,
+    /// Organization ID for reporting.
+    pub organization_id: Option<String>,
+    /// URL to report violations or changes.
+    pub audit_url: Option<String>,
 }

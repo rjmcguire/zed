@@ -6264,7 +6264,7 @@ impl AgentPanel {
         }
 
         let has_configured_non_zed_providers = LanguageModelRegistry::read_global(cx)
-            .visible_providers()
+            .visible_providers(cx)
             .iter()
             .any(|provider| {
                 provider.is_authenticated(cx)

@@ -52,6 +52,7 @@ pub struct ModelSelectorListItem {
     is_focused: bool,
     is_latest: bool,
     is_favorite: bool,
+    is_blocked: bool,
     on_toggle_favorite: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
     cost_info: Option<SharedString>,
 }
@@ -66,6 +67,7 @@ impl ModelSelectorListItem {
             is_focused: false,
             is_latest: false,
             is_favorite: false,
+            is_blocked: false,
             on_toggle_favorite: None,
             cost_info: None,
         }
@@ -101,6 +103,11 @@ impl ModelSelectorListItem {
         self
     }
 
+    pub fn is_blocked(mut self, is_blocked: bool) -> Self {
+        self.is_blocked = is_blocked;
+        self
+    }
+
     pub fn on_toggle_favorite(
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -119,13 +126,21 @@ impl RenderOnce for ModelSelectorListItem {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let model_icon_color = if self.is_selected {
             Color::Accent
+        } else if self.is_blocked {
+            Color::Disabled
         } else {
             Color::Muted
         };
 
+        let label_color = if self.is_blocked {
+            Color::Disabled
+        } else {
+            Color::Default
+        };
+
         let is_favorite = self.is_favorite;
 
-        ListItem::new(self.index)
+        let mut item = ListItem::new(self.index)
             .inset(true)
             .spacing(ListItemSpacing::Sparse)
             .toggle_state(self.is_focused)
@@ -143,7 +158,7 @@ impl RenderOnce for ModelSelectorListItem {
                             .size(IconSize::Small),
                         )
                     })
-                    .child(Label::new(self.title).truncate())
+                    .child(Label::new(self.title).color(label_color).truncate())
                     .when(self.is_latest, |parent| parent.child(Chip::new("Latest")))
                     .when_some(self.cost_info, |this, cost_info| {
                         let tooltip_text = if cost_info.ends_with('×') {
@@ -155,12 +170,18 @@ impl RenderOnce for ModelSelectorListItem {
                         };
 
                         this.child(Chip::new(cost_info).tooltip(Tooltip::text(tooltip_text)))
+                    })
+                    .when(self.is_blocked, |this| {
+                        this.child(Label::new("(Blocked)").size(LabelSize::XSmall).color(Color::Error))
                     }),
             )
             .end_slot(div().pr_2().when(self.is_selected, |this| {
                 this.child(Icon::new(IconName::Check).color(Color::Accent))
-            }))
-            .end_slot_on_hover(div().pr_1p5().when_some(self.on_toggle_favorite, {
+            }));
+
+        if !self.is_blocked {
+            item = item.end_slot_on_hover(div().pr_1p5().when_some(
+                self.on_toggle_favorite,
                 |this, handle_click| {
                     let (icon, color, tooltip) = if is_favorite {
                         (IconName::StarFilled, Color::Accent, "Unfavorite Model")
@@ -175,8 +196,10 @@ impl RenderOnce for ModelSelectorListItem {
                             .tooltip(Tooltip::text(tooltip))
                             .on_click(move |event, window, cx| (handle_click)(event, window, cx)),
                     )
-                }
-            }))
+                },
+            ));
+        }
+        item
     }
 }
 

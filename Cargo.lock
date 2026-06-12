@@ -9727,6 +9727,7 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
+ "settings",
  "thiserror 2.0.17",
  "util",
 ]

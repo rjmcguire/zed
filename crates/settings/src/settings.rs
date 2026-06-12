@@ -2,11 +2,13 @@ mod base_keymap_setting;
 mod content_into_gpui;
 mod editable_setting_control;
 mod editorconfig_store;
+mod enterprise_settings;
 mod keymap_file;
 mod settings_file;
 mod settings_store;
 mod vscode_import;
 
+pub use enterprise_settings::*;
 pub use settings_macros::RegisterSetting;
 
 pub mod settings_content {

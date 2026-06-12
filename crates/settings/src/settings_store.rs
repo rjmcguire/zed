@@ -7,7 +7,8 @@ use futures::{
     future::LocalBoxFuture,
 };
 use gpui::{
-    App, AppContext, AsyncApp, BorrowAppContext, Entity, Global, SharedString, Task, UpdateGlobal,
+    App, AppContext, AsyncApp, BorrowAppContext, Entity, Global, SharedString, Subscription, Task,
+    UpdateGlobal,
 };
 
 use paths::{local_settings_file_relative_path, task_file_name};
@@ -150,6 +151,7 @@ pub struct SettingsStore {
 
     extension_settings: Option<Box<SettingsContent>>,
     server_settings: Option<Box<SettingsContent>>,
+    system_settings: Option<Box<SettingsContent>>,
 
     language_semantic_token_rules: HashMap<SharedString, SemanticTokenRules>,
 
@@ -173,6 +175,7 @@ pub enum SettingsFile {
     Global,
     User,
     Server,
+    System,
     /// Represents project settings in ssh projects as well as local projects
     Project((WorktreeId, Arc<RelPath>)),
 }
@@ -192,11 +195,14 @@ impl Ord for SettingsFile {
             (User, User) => Ordering::Equal,
             (Server, Server) => Ordering::Equal,
             (Default, Default) => Ordering::Equal,
+            (System, System) => Ordering::Equal,
             (Project((id1, rel_path1)), Project((id2, rel_path2))) => id1
                 .cmp(id2)
                 .then_with(|| rel_path1.cmp(rel_path2).reverse()),
             (Project(_), _) => Ordering::Less,
             (_, Project(_)) => Ordering::Greater,
+            (System, _) => Ordering::Less,
+            (_, System) => Ordering::Greater,
             (Server, _) => Ordering::Less,
             (_, Server) => Ordering::Greater,
             (User, _) => Ordering::Less,
@@ -314,6 +320,7 @@ impl SettingsStore {
             user_settings: None,
             extension_settings: None,
             language_semantic_token_rules: HashMap::default(),
+            system_settings: None,
 
             merged_settings: default_settings,
             last_user_settings_content: None,
@@ -343,6 +350,15 @@ impl SettingsStore {
         })
     }
 
+    pub fn observe<T: Settings>(
+        cx: &mut App,
+        mut f: impl FnMut(&mut App) + Send + 'static,
+    ) -> Subscription {
+        cx.observe_global::<Self>(move |cx| {
+            f(cx);
+        })
+    }
+
     pub fn update<C, R>(cx: &mut C, f: impl FnOnce(&mut Self, &mut C) -> R) -> R
     where
         C: BorrowAppContext,
@@ -363,8 +379,13 @@ impl SettingsStore {
         );
         let (mut global_settings_file_rx, global_settings_watcher) = crate::watch_config_file(
             cx.background_executor(),
-            fs,
+            fs.clone(),
             paths::global_settings_file().clone(),
+        );
+        let (mut system_settings_file_rx, system_settings_watcher) = crate::watch_config_file(
+            cx.background_executor(),
+            fs,
+            paths::system_settings_file().clone(),
         );
 
         let global_content = cx
@@ -375,22 +396,37 @@ impl SettingsStore {
             .foreground_executor()
             .block_on(user_settings_file_rx.next())
             .unwrap();
+        let system_content = cx
+            .foreground_executor()
+            .block_on(system_settings_file_rx.next())
+            .unwrap();
 
         let result = self.set_user_settings(&user_content, cx);
         settings_changed(SettingsFile::User, result, cx);
         let result = self.set_global_settings(&global_content, cx);
         settings_changed(SettingsFile::Global, result, cx);
+        // System settings are enforced by administrators and take highest precedence.
+        self.set_system_settings(&system_content, cx).log_err();
 
         self._settings_files_watcher = Some(cx.spawn(async move |cx| {
             let _user_settings_watcher = user_settings_watcher;
             let _global_settings_watcher = global_settings_watcher;
+            let _system_settings_watcher = system_settings_watcher;
             let mut settings_streams = futures::stream::select(
                 global_settings_file_rx.map(|content| (SettingsFile::Global, content)),
-                user_settings_file_rx.map(|content| (SettingsFile::User, content)),
+                futures::stream::select(
+                    user_settings_file_rx.map(|content| (SettingsFile::User, content)),
+                    system_settings_file_rx.map(|content| (SettingsFile::System, content)),
+                ),
             );
 
             while let Some((settings_file, content)) = settings_streams.next().await {
                 cx.update_global(|store: &mut SettingsStore, cx| {
+                    if settings_file == SettingsFile::System {
+                        store.set_system_settings(&content, cx).log_err();
+                        cx.refresh_windows();
+                        return;
+                    }
                     let result = match settings_file {
                         SettingsFile::User => store.set_user_settings(&content, cx),
                         SettingsFile::Global => store.set_global_settings(&content, cx),
@@ -658,6 +694,10 @@ impl SettingsStore {
         if self.server_settings.is_some() {
             files.push(SettingsFile::Server);
         }
+
+        if self.system_settings.is_some() {
+            files.push(SettingsFile::System);
+        }
         // ignoring profiles
         // ignoring os profiles
         // ignoring release channel profiles
@@ -679,6 +719,7 @@ impl SettingsStore {
                 .map(|settings| settings.content.as_ref()),
             SettingsFile::Default => Some(self.default_settings.as_ref()),
             SettingsFile::Server => self.server_settings.as_deref(),
+            SettingsFile::System => self.system_settings.as_deref(),
             SettingsFile::Project(ref key) => self.local_settings.get(key),
             SettingsFile::Global => self.global_settings.as_deref(),
         }
@@ -1030,6 +1071,23 @@ impl SettingsStore {
         self.language_semantic_token_rules.get(language)
     }
 
+    pub fn set_system_settings(
+        &mut self,
+        system_settings_content: &str,
+        cx: &mut App,
+    ) -> Result<()> {
+        let settings = if system_settings_content.is_empty() {
+            None
+        } else {
+            Option::<SettingsContent>::parse_json_with_comments(system_settings_content)?
+        };
+
+        self.system_settings = settings.map(|settings| Box::new(settings));
+
+        self.recompute_values(None, cx);
+        Ok(())
+    }
+
     /// Add or remove a set of local settings via a JSON string.
     pub fn set_local_settings(
         &mut self,
@@ -1347,6 +1405,8 @@ impl SettingsStore {
                 }
             }
             merged.merge_from_option(self.server_settings.as_deref());
+            // System settings are enforced on top of all other settings.
+            merged.merge_from_option(self.system_settings.as_deref());
 
             // Merge `disable_ai` from all project/local settings into the global value.
             // Since `SaturatingBool` uses OR logic, if any project has `disable_ai: true`,
@@ -1423,6 +1483,8 @@ impl SettingsStore {
                 self.merged_settings.as_ref().clone()
             };
             merged_local_settings.merge_from(local_settings);
+            // System settings are enforced on top of project settings
+            merged_local_settings.merge_from_option(self.system_settings.as_deref());
 
             project_settings_stack.push(merged_local_settings);
 
@@ -1536,6 +1598,9 @@ pub enum InvalidSettingsError {
     ServerSettings {
         message: String,
     },
+    SystemSettings {
+        message: String,
+    },
     DefaultSettings {
         message: String,
     },
@@ -1559,6 +1624,7 @@ impl std::fmt::Display for InvalidSettingsError {
             InvalidSettingsError::LocalSettings { message, .. }
             | InvalidSettingsError::UserSettings { message }
             | InvalidSettingsError::ServerSettings { message }
+            | InvalidSettingsError::SystemSettings { message }
             | InvalidSettingsError::DefaultSettings { message }
             | InvalidSettingsError::Tasks { message, .. }
             | InvalidSettingsError::Editorconfig { message, .. }

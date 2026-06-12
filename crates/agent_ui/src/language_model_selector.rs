@@ -56,7 +56,7 @@ pub fn language_model_selector(
 
 fn all_models(cx: &App) -> GroupedModels {
     let lm_registry = LanguageModelRegistry::global(cx).read(cx);
-    let providers = lm_registry.visible_providers();
+    let providers = lm_registry.visible_providers(cx);
 
     let mut favorites_index = FavoritesIndex::default();
 
@@ -73,7 +73,7 @@ fn all_models(cx: &App) -> GroupedModels {
             provider
                 .recommended_models(cx)
                 .into_iter()
-                .map(|model| ModelInfo::new(&**provider, model, &favorites_index))
+                .map(|model| ModelInfo::new(&**provider, model, &favorites_index, cx))
         })
         .collect();
 
@@ -83,7 +83,7 @@ fn all_models(cx: &App) -> GroupedModels {
             provider
                 .provided_models(cx)
                 .into_iter()
-                .map(|model| ModelInfo::new(&**provider, model, &favorites_index))
+                .map(|model| ModelInfo::new(&**provider, model, &favorites_index, cx))
         })
         .collect();
 
@@ -97,6 +97,7 @@ struct ModelInfo {
     model: Arc<dyn LanguageModel>,
     icon: IconOrSvg,
     is_favorite: bool,
+    is_blocked: bool,
 }
 
 impl ModelInfo {
@@ -104,15 +105,20 @@ impl ModelInfo {
         provider: &dyn LanguageModelProvider,
         model: Arc<dyn LanguageModel>,
         favorites_index: &FavoritesIndex,
+        cx: &App,
     ) -> Self {
         let is_favorite = favorites_index
             .get(&provider.id())
             .map_or(false, |set| set.contains(&model.id()));
 
+        let is_blocked = LanguageModelRegistry::read_global(cx)
+            .is_provider_blocked_by_policy(&provider.id(), cx);
+
         Self {
             model,
             icon: provider.icon(),
             is_favorite,
+            is_blocked,
         }
     }
 }
@@ -405,7 +411,7 @@ impl PickerDelegate for LanguageModelPickerDelegate {
 
     fn can_select(&self, ix: usize, _window: &mut Window, _cx: &mut Context<Picker<Self>>) -> bool {
         match self.filtered_entries.get(ix) {
-            Some(LanguageModelPickerEntry::Model(_)) => true,
+            Some(LanguageModelPickerEntry::Model(model)) => !model.is_blocked,
             Some(LanguageModelPickerEntry::Separator(_)) | None => false,
         }
     }
@@ -429,7 +435,7 @@ impl PickerDelegate for LanguageModelPickerDelegate {
 
         let configured_providers = language_model_registry
             .read(cx)
-            .visible_providers()
+            .visible_providers(cx)
             .into_iter()
             .filter(|provider| provider.is_authenticated(cx))
             .collect::<Vec<_>>();
@@ -520,6 +526,7 @@ impl PickerDelegate for LanguageModelPickerDelegate {
                     .map(|cost| cost.to_shared_string());
 
                 let is_favorite = model_info.is_favorite;
+                let is_blocked = model_info.is_blocked;
                 let handle_action_click = {
                     let model = model_info.model.clone();
                     let on_toggle_favorite = self.on_toggle_favorite.clone();
@@ -540,6 +547,7 @@ impl PickerDelegate for LanguageModelPickerDelegate {
                         .is_latest(model_info.model.is_latest())
                         .is_favorite(is_favorite)
                         .cost_info(model_cost)
+                        .is_blocked(is_blocked)
                         .on_toggle_favorite(handle_action_click)
                         .into_any_element(),
                 )
@@ -666,6 +674,7 @@ mod tests {
                     model: Arc::new(TestLanguageModel::new(name, provider)),
                     icon: IconOrSvg::Icon(IconName::ZedAgent),
                     is_favorite,
+                    is_blocked: false,
                 }
             })
             .collect()
